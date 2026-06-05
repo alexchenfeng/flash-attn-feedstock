@@ -58,7 +58,7 @@ outputs:
         env:
           # Limit MAX_JOBS in order to prevent runners from crashing
           MAX_JOBS: "6"
-          TORCH_CUDA_ARCH_LIST: "11.0"
+          TORCH_CUDA_ARCH_LIST: "11.0;8.7"
 
   - package:
       name: flash-attn
