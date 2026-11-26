@@ -1,13 +1,13 @@
 schema_version: 1
 
 context:
-  version: "2.8.3"
+  version: 2.8.3
 
 recipe:
   name: flash-attn-split
   # Strip ".postX" from version number because these just indicate wheel rebuilds and
   # are not relevant to conda builds
-  version: ${{ version }}
+  version: ${{ (version | split('.'))[:3] | join('.') }}
 
 source:
   # Use PYPI sdist instead of GitHub because they include a specific revended CUTLASS
@@ -18,15 +18,14 @@ source:
   - path: setup.py
 
 build:
-  number: 3
-  # Satisfy linter by not having duplicate skip keys
+  number: 7
   skip:
-    - cuda_compiler_version == "None" or not linux
+    - cuda_compiler_version == "None" or (not linux)
     # debugging skips below
-    # - py != 313
+    # - match(python, "<3.14")
+    # - cuda_compiler_version == "12.9"
 
 outputs:
-  # Staging output: builds once and caches results for subsequent package outputs
   - staging:
       name: flash-attn-build
     requirements:
@@ -36,12 +35,15 @@ outputs:
         - ${{ compiler('cuda') }}
         - ${{ stdlib('c') }}
         - ninja
-        - if: build_platform != target_platform
+        - patchelf
+        - if: build_platform != host_platform
           then:
+            - python
+            - cross-python_${{ host_platform }}
             - pytorch
             - pytorch * cuda*
       host:
-        - cuda-version ${{ cuda_compiler_version }}.*  # same cuda for host and build
+        - cuda-version ${{ cuda_compiler_version }}.* # same cuda for host and build
         - cuda-cudart-dev
         - libcublas-dev
         - libcurand-dev
@@ -54,15 +56,21 @@ outputs:
         - setuptools
     build:
       script:
-        content: $PYTHON -m pip install . -vvv --no-deps --no-build-isolation
         env:
           # Limit MAX_JOBS in order to prevent runners from crashing
-          MAX_JOBS: "6"
-          TORCH_CUDA_ARCH_LIST: "11.0;8.7"
+          MAX_JOBS: "8"
+          TORCH_CUDA_ARCH_LIST: 8.0;8.6;8.9;9.0;10.0;12.0+PTX
+        file: build.sh
 
   - package:
       name: flash-attn
     inherit: flash-attn-build
+    build:
+      files:
+        include:
+          - lib/python*/site-packages/flash_attn/**
+          - lib/python*/site-packages/flash_attn-${{ version }}.dist-info/**
+          - lib/python*/site-packages/flash_attn_2_cuda.cpython-*.so
     requirements:
       build:
         - ${{ compiler('c') }}
@@ -70,7 +78,7 @@ outputs:
         - ${{ compiler('cuda') }}
         - ${{ stdlib('c') }}
       host:
-        - cuda-version ${{ cuda_compiler_version }}.*  # same cuda for host and build
+        - cuda-version ${{ cuda_compiler_version }}.* # same cuda for host and build
         - cuda-cudart-dev
         - python
         - pytorch
@@ -79,32 +87,33 @@ outputs:
         - einops
         - python
         - pytorch * cuda*
-    build:
-      files:
-        include:
-          - 'lib/python*/site-packages/flash_attn/**'
-          - 'lib/python*/site-packages/flash_attn-${{ version }}.dist-info/**'
-          - 'lib/python*/site-packages/flash_attn_2_cuda.cpython-*.so'
     tests:
-      - python:
-          imports:
-            - flash_attn
-      - script:
-          - pip check
-        requirements:
-          run:
-            - pip
+      - package_contents:
+          files:
+            - lib/python*/site-packages/flash_attn/__init__.py
+            - lib/python*/site-packages/flash_attn_2_cuda*.so
+      # Cross-built AArch64 Python cannot execute on the x86_64 runner.
+      - if: build_platform == target_platform
+        then:
+          - python:
+              imports:
+                - flash_attn
+              pip_check: true
 
   - package:
       name: flash-attn-fused-dense
     inherit: flash-attn-build
+    build:
+      files:
+        include:
+          - lib/python*/site-packages/fused_dense_lib.cpython-*.so
     requirements:
       build:
         - ${{ compiler('cxx') }} # needed for DSO checker
-        - ${{ stdlib('c') }}     # needed for DSO checker
+        - ${{ stdlib('c') }} # needed for DSO checker
         - ${{ compiler('cuda') }}
       host:
-        - cuda-version ${{ cuda_compiler_version }}.*  # same cuda for host and build
+        - cuda-version ${{ cuda_compiler_version }}.* # same cuda for host and build
         - cuda-cudart-dev
         - libcublas-dev
         - python
@@ -112,55 +121,53 @@ outputs:
         - pytorch * cuda*
       run:
         - python
-        - ${{ pin_subpackage('flash-attn', exact=true) }}
-    build:
-      files:
-        include:
-          - 'lib/python*/site-packages/fused_dense_lib.cpython-*.so'
+        - ${{ pin_subpackage('flash-attn', exact=True) }}
     tests:
-      - python:
-          imports:
-            - flash_attn.ops.fused_dense
-      - script:
-          - pip check
-        requirements:
-          run:
-            - pip
+      - package_contents:
+          files:
+            - lib/python*/site-packages/fused_dense_lib*.so
+      - if: build_platform == target_platform
+        then:
+          - python:
+              imports:
+                - flash_attn.ops.fused_dense
+              pip_check: true
 
   - package:
       name: flash-attn-layer-norm
     inherit: flash-attn-build
+    build:
+      files:
+        include:
+          - lib/python*/site-packages/dropout_layer_norm.cpython-*.so
     requirements:
       build:
         - ${{ compiler('cxx') }} # needed for DSO checker
-        - ${{ stdlib('c') }}     # needed for DSO checker
+        - ${{ stdlib('c') }} # needed for DSO checker
         - ${{ compiler('cuda') }}
       host:
-        - cuda-version ${{ cuda_compiler_version }}.*  # same cuda for host and build
+        - cuda-version ${{ cuda_compiler_version }}.* # same cuda for host and build
         - cuda-cudart-dev
         - python
         - pytorch
         - pytorch * cuda*
       run:
         - python
-        - ${{ pin_subpackage('flash-attn', exact=true) }}
-    build:
-      files:
-        include:
-          - 'lib/python*/site-packages/dropout_layer_norm.cpython-*.so'
+        - ${{ pin_subpackage('flash-attn', exact=True) }}
     tests:
-      - python:
-          imports:
-            - flash_attn.ops.layer_norm
-      - script:
-          - pip check
-        requirements:
-          run:
-            - pip
+      - package_contents:
+          files:
+            - lib/python*/site-packages/dropout_layer_norm*.so
+      - if: build_platform == target_platform
+        then:
+          - python:
+              imports:
+                - flash_attn.ops.layer_norm
+              pip_check: true
 
 about:
   homepage: https://github.com/Dao-AILab/flash-attention
-  summary: 'Flash Attention: Fast and Memory-Efficient Exact Attention'
+  summary: "Flash Attention: Fast and Memory-Efficient Exact Attention"
   license: BSD-3-Clause
   license_file:
     - LICENSE
@@ -170,4 +177,5 @@ extra:
   feedstock-name: flash-attn
   recipe-maintainers:
     - carterbox
+    - jeongseok-meta
     - weiji14
